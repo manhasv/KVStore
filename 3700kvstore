@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+
+import argparse, socket, time, json, select, struct, sys, math, os
+import random
+
+BROADCAST = "FFFF"
+
+class Replica:
+    def __init__(self, port, id, others):
+        self.port = port
+        self.id = id
+        self.others = others
+        
+        # Setting for RAFT 
+        self.data = {}
+        self.state = "follower"
+        self.term = 0
+        self.votes = []
+        self.leader = "0000"
+        
+        # Timing and random time from (T, 2T)
+        self.heartbeat = time.time()
+        self.timeout = random.uniform(0.15, 0.3)
+
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(('localhost', 0))
+
+        print("Replica %s starting up" % self.id, flush=True)
+        hello = { "src": self.id, "dst": BROADCAST, "leader": BROADCAST, "type": "hello" }
+        self.send(hello)
+        print("Sent hello message: %s" % hello, flush=True)
+
+    def send(self, message):
+        self.socket.sendto(json.dumps(message).encode('utf-8'), ('localhost', self.port))
+                
+    def handleResponse(self, msg):
+        type = msg["type"]
+        if type == "get":
+            self.getResponse(msg)
+        elif type == "put":
+            self.putResponse(msg)
+    
+    def election(self):
+        self.term += 1
+        self.state = "candidate"
+        self.votes.append(self.id)
+        self.leader = "FFFF"
+    
+        for other in self.others:
+            self.reqVote(other)
+        self.heartbeat = time.time()  
+              
+    def appendEntry(self):
+        for other in self.others:
+            msg = {"src": self.id,
+                   "dst": other,
+                   "leader": self.leader,
+                   "term": self.term,
+                   "type": "AppendEntries"}
+            self.send(msg)
+
+    def reqVote(self, replica):
+        request = {"src": self.id,
+                   "dst": replica,
+                   "leader": self.leader,
+                   "type": "RequestVote"}
+        self.send(request)
+
+    def redirect(self, request):
+        msg = {"src": self.id,
+               "dst": request["src"],
+               "leader": self.leader,
+               "type": "redirect",
+               "MID": request["MID"]}
+        self.send(msg)
+    
+    def getResponse(self, request):
+        msg = None
+        if self.id == "FFFF":
+            return
+        
+        if request["leader"] != self.id:
+            self.redirect(request)
+        else:
+            if self.data.get(request["key"]) == None:
+                msg = {"src": self.id,
+                    "dst": request["src"],
+                    "leader": self.leader,
+                    "type": "fail",
+                    "MID": request["MID"]}
+            else:
+                msg = {"src": self.id,
+                    "dst": request["src"],
+                    "leader": self.leader,
+                    "type": "ok",
+                    "MID": request["MID"],
+                    "key": request["key"],
+                    "value": self.data[request["key"]]}
+            self.send(msg)
+    
+    def putResponse(self, request):
+        msg = None
+        if self.id == "FFFF":
+            return
+        
+        if request["leader"] != self.id:
+            self.redirect(request)
+        else:
+            if self.data.get(request["key"]) == None:
+                msg = {"src": self.id,
+                    "dst": request["src"],
+                    "leader": self.leader,
+                    "type": "ok",
+                    "MID": request["MID"]}
+                self.data[request["key"]] = request["value"]
+            else:
+                msg = {"src": self.id,
+                    "dst": request["src"],
+                    "leader": self.leader,
+                    "type": "fail",
+                    "MID": request["MID"]}
+            self.send(msg)
+
+    def run(self):
+        while True:
+            data, addr = self.socket.recvfrom(65535)
+            msg = data.decode('utf-8')
+            msg = json.loads(msg)
+            print("Received message '%s'" % (msg,), flush=True)
+
+            if self.id != self.leader:
+                if self.heartbeat == self.timeout:
+                    self.heartbeat = time.time() 
+                    self.election()
+            else:
+                self.appendEntry()
+            
+            self.handleResponse(msg)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='run a key-value store')
+    parser.add_argument('port', type=int, help="Port number to communicate")
+    parser.add_argument('id', type=str, help="ID of this replica")
+    parser.add_argument('others', metavar='others', type=str, nargs='+', help="IDs of other replicas")
+    args = parser.parse_args()
+    replica = Replica(args.port, args.id, args.others)
+    replica.run()
