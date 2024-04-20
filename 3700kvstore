@@ -5,6 +5,7 @@ import random
 
 BROADCAST = "FFFF"
 
+# A Replica in a RAFT protocol
 class Replica:
     def __init__(self, port, id, others):
         self.port = port
@@ -30,9 +31,11 @@ class Replica:
         self.send(hello)
         print("Sent hello message: %s" % hello, flush=True)
 
+    # sending a encoded message
     def send(self, message):
         self.socket.sendto(json.dumps(message).encode('utf-8'), ('localhost', self.port))
-                
+            
+    # handle the msg based on the type (get/put/appendEntry/requestVote)
     def handleResponse(self, msg):
         type = msg["type"]
         if type == "get":
@@ -40,6 +43,7 @@ class Replica:
         elif type == "put":
             self.putResponse(msg)
     
+    # start the selection process
     def election(self):
         self.term += 1
         self.state = "candidate"
@@ -50,6 +54,7 @@ class Replica:
             self.reqVote(other)
         self.heartbeat = time.time()  
               
+    # send the appendEntries message
     def appendEntry(self):
         for other in self.others:
             msg = {"src": self.id,
@@ -59,6 +64,7 @@ class Replica:
                    "type": "AppendEntries"}
             self.send(msg)
 
+    # send the requestVote message
     def reqVote(self, replica):
         request = {"src": self.id,
                    "dst": replica,
@@ -66,6 +72,7 @@ class Replica:
                    "type": "RequestVote"}
         self.send(request)
 
+    # Redirect the message back to leader
     def redirect(self, request):
         msg = {"src": self.id,
                "dst": request["src"],
@@ -74,6 +81,7 @@ class Replica:
                "MID": request["MID"]}
         self.send(msg)
     
+    #stimulate a response to the GET request
     def getResponse(self, request):
         msg = None
         if self.id == "FFFF":
@@ -97,7 +105,8 @@ class Replica:
                     "key": request["key"],
                     "value": self.data[request["key"]]}
             self.send(msg)
-    
+
+    #stimulate a response to the PUT request
     def putResponse(self, request):
         msg = None
         if self.id == "FFFF":
@@ -120,7 +129,8 @@ class Replica:
                     "type": "fail",
                     "MID": request["MID"]}
             self.send(msg)
-
+    
+    # Run the replica
     def run(self):
         while True:
             data, addr = self.socket.recvfrom(65535)
